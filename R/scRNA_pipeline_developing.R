@@ -3,7 +3,7 @@
 
 # Developers: Surbhi Sona and Jean Clemenceu
 
-source('/home/sonas/beegfs/scripts/R/tinglab_scRNA_pipeline_functions.R')
+source('scRNA_pipeline_functions_developing.R')
 
 library(argparser)
 
@@ -18,6 +18,13 @@ parser<-add_argument(
   type="character",
   default='./',
   help="Enter input directory path in the format /path/to/input_dir/ Default=./ ")
+
+parser<-add_argument(
+  parser,
+  arg='--rawcount_mat',
+  short = '-R',
+  flag=TRUE,
+  help="Flag to indicate inputs are raw count matrices.")
 
 parser<-add_argument(
   parser,
@@ -123,18 +130,18 @@ parser<-add_argument(
   help="Enter number of genes to integrate: Leave blank to integrate sample.anchors, enter 'all' to integrate all genes, or a numeric value to  enter the number of genes to integrate (should be same as number of variable genes computed) ")
 
 parser<-add_argument(
- parser,
- arg='--qc_only',
- short='-Q',
- flag=TRUE,
- help="Set flag to run only QC")
+  parser,
+  arg='--qc_only',
+  short='-Q',
+  flag=TRUE,
+  help="Set flag to run only QC")
 
 parser<-add_argument(
- parser,
- arg='--qc_plots',
- short='-q',
- flag=TRUE,
- help="Set flag to generate qc plots (pre and post filtering)")
+  parser,
+  arg='--qc_plots',
+  short='-q',
+  flag=TRUE,
+  help="Set flag to generate qc plots (pre and post filtering)")
 
 parser<-add_argument(
   parser,
@@ -145,12 +152,12 @@ parser<-add_argument(
   help="specify which clustering optimizations to run, Enter 'clustree' for running clustree or/and 'sil' for running silhouette'. Separate multiple entries with ','. Default is set to run neither")
 
 parser<-add_argument(
-parser,
-arg='--gene_list',
-short = '-n',
-type='character',
-default="KRT5,KRT14,KRT15,KRT17,KRT20,UPK2,UPK3A,UPK3B,UPK1A,UPK1B,EPCAM,PTPRC,CD8A,CD79A,CD79B,LST1,TRAC,NKG7,KLRD1,TPSAB,PECAM1,FLT1,DCN,POSTN,ACTA2,MHY11,MKI67,TP63",
-help="Enter the list of genes to be plotted on clustree [separated by ,]")
+  parser,
+  arg='--gene_list',
+  short = '-n',
+  type='character',
+  default="KRT5,KRT14,KRT15,KRT17,KRT20,UPK2,UPK3A,UPK3B,UPK1A,UPK1B,EPCAM,PTPRC,CD8A,CD79A,CD79B,LST1,TRAC,NKG7,KLRD1,TPSAB,PECAM1,FLT1,DCN,POSTN,ACTA2,MHY11,MKI67,TP63",
+  help="Enter the list of genes to be plotted on clustree [separated by ,]")
 
 parser<-add_argument(
  parser,
@@ -182,6 +189,37 @@ parser<-add_argument(
   short = '-v',
   flag=TRUE,
   help="Set flag for printing output messages during the run")
+
+parser<-add_argument(
+  parser,
+  arg='--k_weight',
+  short = '-k',
+  default=100,
+  type='numeric',
+  help="Enter the number of k.weight for Seurat function IntegrateData. Default = 100")
+
+parser<-add_argument(
+  parser,
+  arg='--ref',
+  short = '-r',
+  default='NULL',
+  type='character',
+  help="Enter the index of samples used for reference for Seurat function FindIntegrationAnchors. Default = NULL")
+
+parser<-add_argument(
+  parser,
+  arg='--sex_integration',
+  short = '-S',
+  flag=TRUE,
+  help="Set flag for filtering out sex chromosome genes from FindVariableFeature results of each sample")
+
+parser<-add_argument(
+  parser,
+  arg='--gtf_file',
+  short = '-G',
+  type="character",
+  default='./refdata-gex-GRCh38-2020-A/genes/genes.gtf',
+  help="Enter the path of cellranger gtf file used in the format /path/to/file. Needed if -x flagged. Default=./refdata-gex-GRCh38-2020-A/genes/genes.gtf")
 
 args <- parse_args(parser)
 
@@ -345,8 +383,14 @@ if(args$object=='')
           }
      
     n<-length(args$samples)
-    #Create Seurat object from single directory
-    obj.list<-lapply(args$samples[1:n],create_seurat_obj_10X,input_dir=args$input_dir,args$data_dir,verbose=args$verbose)
+    if (args$rawcount_mat==TRUE) {
+      if(args$verbose)
+      {cat('Loading raw count matrices as inputs', '\n')}
+      obj.list<-lapply(args$samples[1:n],create_seurat_obj_rawcounts,input_dir=args$input_dir,verbose=args$verbose)
+    } else { 
+      #Create Seurat object from single directory
+      obj.list<-lapply(args$samples[1:n],create_seurat_obj_10X,input_dir=args$input_dir,args$data_dir,verbose=args$verbose)
+      }
     }
     
 }else
@@ -667,9 +711,12 @@ if(length(obj.list)>1)
  {
   if(args$verbose)
   {cat('Performing cca-mnn batch integration \n')}
-  
-  obj.integrated<-cca_batch_correction(obj.list,project.name=args$file_prefix, anchors=args$hvg, int.genes=args$batch_genes, verbose=args$verbose)
-
+  if(args$ref=='NULL'){ 
+    obj.integrated<-cca_batch_correction(obj.list,project.name=args$file_prefix, anchors=args$hvg, int.genes=args$batch_genes, verbose=args$verbose, k.weight=args$k_weight, sex.integration=args$sex_integration, gtf_file = args$gtf_file)
+    }else {
+    args$ref <- as.numeric(unlist(strsplit(args$ref,split = ',',fixed = TRUE)))
+    obj.integrated<-cca_batch_correction(obj.list,project.name=args$file_prefix, anchors=args$hvg, int.genes=args$batch_genes, verbose=args$verbose, k.weight=args$k_weight, ref=args$ref, sex.integration=args$sex_integration, gtf_file = args$gtf_file)   
+  }
 }else if(args$batch_correction=='harmony')
  {
      if(args$verbose)
@@ -809,6 +856,8 @@ print_clustree_png(obj_clustree, prefix=prefix, out_dir=args$output_dir, file_pr
 
 # Generate clustree geneplots on integrated assay
 print_geneplots_on_clustree(obj_clustree,genes=args$gene_list,prefix=prefix,assay=assay , fun_use='median',out_dir= args$output_dir, file_prefix=clus_run, verbose=FALSE)
+
+print_geneplots_on_clustree(obj_clustree,genes=args$gene_list,prefix=prefix,assay=assay , fun_use='mean',out_dir= args$output_dir, file_prefix=clus_run, verbose=FALSE)
 }
 
 # Generate clustree geneplots on RNA assay using a copy of batch corrected object
@@ -846,7 +895,7 @@ if((is.null(obj.integrated@assays$integrated@var.features))==FALSE)
 
 obj.integrated_RNA<-RunPCA(obj.integrated_RNA,assay='RNA',features=var_genes)
 
-cat('Generating clustree geneplots on RNA assay \n')
+cat('Generating clustree geneplots on RNA assay using median function\n')
 for(i in 1:length(pc))
 {
 obj_clustree<-NULL
@@ -854,6 +903,16 @@ clus_run=paste0(args$file_prefix,'PC',pc[i])
 obj_clustree<-iterative_clus_by_res(obj.integrated_RNA, res=res,dims_use=1:pc[i],verbose=args$verbose,assay='RNA')
 
 print_geneplots_on_clustree(obj_clustree,genes=args$gene_list, fun_use='median',assay='RNA',prefix='RNA_snn_res.', out_dir=args$output_dir,file_prefix=clus_run, verbose=FALSE)
+}
+
+cat('Generating clustree geneplots on RNA assay using mean function\n')
+for(i in 1:length(pc))
+{
+obj_clustree<-NULL
+clus_run=paste0(args$file_prefix,'PC',pc[i])
+obj_clustree<-iterative_clus_by_res(obj.integrated_RNA, res=res,dims_use=1:pc[i],verbose=args$verbose,assay='RNA')
+
+print_geneplots_on_clustree(obj_clustree,genes=args$gene_list, fun_use='mean',assay='RNA',prefix='RNA_snn_res.', out_dir=args$output_dir,file_prefix=clus_run, verbose=FALSE)
 }
 
 rm(clus_run)
@@ -877,20 +936,29 @@ pc<-c(15,20,25,30,35,40,50)
 
 DefaultAssay(obj.integrated)<-assay
 
+pc_res_avg_sil <- data.frame(matrix(ncol = 3, nrow = 0))
+colnames(pc_res_avg_sil) <- c('pc', 'res', 'avg.width')
+
 for(i in 1:length(pc))
 {
 for(j in 1:length(res))
    {
    sil_run<-paste0(args$file_prefix,'PC',pc[i],'_res',res[j])
    obj_sil<-iterative_clus_by_res(obj.integrated,dims_use=1:pc[i],res=res[j],verbose=args$verbose,reduction=reduction,assay=assay)
-    get_silhouette_plot(s.obj=obj_sil,reduction=reduction,dims=1:pc[i],out_dir=args$output_dir,file_prefix=sil_run,verbose=args$verbose)
+   sil <- get_silhouette_plot(s.obj=obj_sil,reduction=reduction,dims=1:pc[i],out_dir=args$output_dir,file_prefix=sil_run,verbose=args$verbose)
+   pc_res_avg_sil[nrow(pc_res_avg_sil) + 1,] = c(paste0('1:PC',pc[i]),res[j],as.numeric(summary(sil)[4]))
    }
 }
+
+write.csv(pc_res_avg_sil,paste0(args$output_dir,"Silhouette/pc_res_avg_sil.csv"),row.names=FALSE)
+#ggplot(data = pc_res_avg_sil, aes(x=res, y=avg.width)) + geom_point(aes(col=as.factor(pc)), size=3) + scale_x_continuous(breaks = seq(0, 1.3, 0.1))
+#ggsave("pc_res_avg_sil.png",path=args$output_dir, width=8.5, height=11,units="in")
 
 rm(pc)
 rm(res)
 rm(sil_run)
 rm(obj_sil)
+rm(sil)
 
 }
 

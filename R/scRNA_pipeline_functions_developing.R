@@ -27,7 +27,7 @@ library(ggplot2)
 library(lattice)
 library(gridExtra)
 library(grid)
-
+library(future)
 
 ### Function to create Seurat object ###
 
@@ -36,16 +36,36 @@ library(grid)
 # input_dir - full path to the 10X output directory for a given sample output is stored
 # data_dir - logical argument (TRUE/FALSE)
 
+create_seurat_obj_rawcounts <- function(sample_id,input_dir,verbose=FALSE) {
+  path <- paste0(input_dir,sample_id,'/')
+  input_file <- list.files(path,full.names=TRUE)
+  if (length(input_file) > 1) {stop('One matrix per folder only \n')}
+  if(verbose)
+  {
+    cat(paste('Loading',sample_id,'from:',path,'\n'))
+  }
+  counts.mat <- read.table(input_file, header = TRUE, row.names = 1, sep = "\t") #For GEO raw gene count matrix input
+  # Create Seurat object
+  if(verbose)
+  {cat(paste('Creating Seurat Object for',sample_id),sep='\n')}
+  
+  s.obj<-CreateSeuratObject(counts=counts.mat, project = sample_id)
+  s.obj<-add_mt_perc(s.obj,sample_id)
+  
+  return(s.obj) 
+}
+
 create_seurat_obj_10X<-function(sample_id,input_dir,data_dir=FALSE,verbose=FALSE)
 {
  # Read data from cellranger output 
  path<-paste0(input_dir,sample_id,'/outs/')
+# path<-paste0(input_dir,sample_id,'/')
  if(data_dir)
  { if(verbose)
      {
          cat(paste0('Loading', sample_id,'from: ',path,'filtered_feature_bc_matrix/'),sep='\n')
      }
-   counts.mat <- Read10X(data.dir= paste0(path,'filtered_feature_bc_matrix/'))
+   counts.mat <- Read10X(data.dir= paste0(path,'filtered_feature_bc_matrix/')) #For when inputs are Cellranger outputs
  }else{
    if(verbose){
       cat(paste('Loading',sample_id,'from',path,'filtered_feature_bc_matrix.h5',sep=' '),sep='\n')
@@ -382,7 +402,7 @@ get_var_genes<-function(s.obj,out_dir='./',verbose=FALSE)
 # merged.title - project name of the integrated object
 # genes - Specify the genes to be integrated (if not specified, only sample anchors included in the final expression matrix of the integrated object). Other options are: 'all'  to integrate all genes or a number to specify the number of top variable genes to include (the specified number of variable genes are calculated on merged obj)
 
-cca_batch_correction<-function(s.obj.list,project.name,anchors=2000,int.genes='',verbose=FALSE)
+cca_batch_correction<-function(s.obj.list,project.name,anchors=2000,int.genes='',verbose=FALSE, k.weight=100, ref=NULL, sex.integration=FALSE, gtf_file = './refdata-gex-GRCh38-2020-A/genes/genes.gtf')
 {
   if(verbose){
     cat("Performing CCA-MNN Pipeline",sep='\n')
@@ -395,12 +415,16 @@ norm<-s.obj.list[[1]]@commands$NormalizeData.RNA@params$normalization.method
  mink<-min(200, min(sapply(seq_along(s.obj.list),function(x) ncol(s.obj.list[[x]]) ))  )
  
 # Select features
-features<-SelectIntegrationFeatures(obj.list,nfeatures=anchors)
+ if (sex.integration){
+   obj.list<-lapply(X=1:length(obj.list),function(x){filter_out_XYgenes(obj.list[[x]], gtf_file = gtf_file)})
+ }
+
+ features<-SelectIntegrationFeatures(obj.list,nfeatures=anchors)
+
 
 # Find Integration anchors
-sample.anchors<-FindIntegrationAnchors(s.obj.list,dims = 1:30,k.filter=mink,reduction='cca',anchor.features=features,normalization.method=norm)
+sample.anchors<-FindIntegrationAnchors(s.obj.list,dims = 1:30,k.filter=mink,reduction='cca',anchor.features=features,normalization.method=norm, reference=ref)
 
-# Integrate with specified number of genes
  if(int.genes=='')
 {if(verbose)
     {cat("Integrating the sample.anchors only",sep='\n')}
@@ -413,7 +437,7 @@ sample.anchors<-FindIntegrationAnchors(s.obj.list,dims = 1:30,k.filter=mink,redu
        {cat("CCA_MNN batch correction - integrating all genes", sep='\n')
         cat("Total genes being used for integration = ", length(all.genes),'\n')
        }
-    s.obj.integrated<-IntegrateData(anchorset=sample.anchors, dims=1:30,features.to.integrate=all.genes,normalization.method=norm)
+    s.obj.integrated<-IntegrateData(anchorset=sample.anchors, dims=1:30,features.to.integrate=all.genes,normalization.method=norm, k.weight = k.weight)
    }
 
 rm(sample.anchors)
@@ -560,7 +584,7 @@ seurat_clusters<-grep('snn',colnames(s.obj@meta.data))
    	  markers[[i]]<-FindMarkers(s.obj, ident.1= clusters[i])
     	  gene<-rownames(markers[[i]])
     	  markers[[i]]<-cbind(gene,markers[[i]])
-    	  markers[[i]]<-markers[[i]] %>% filter(p_val_adj<0.05) %>% mutate(pct.diff=pct.1-pct.2)%>% arrange(desc(pct.diff,avg_logFC))
+    	  markers[[i]]<-markers[[i]] %>% filter(p_val_adj<0.05) %>% mutate(pct.diff=pct.1-pct.2)%>% arrange(desc(pct.diff))
    #markers[[i]]<-markers[[i]][order(markers[[i]]["avg_logFC"], decreasing=TRUE),]
     	  if(save)
 		{fwrite(markers[[i]], paste0(out_path,file_prefix,'cluster',clusters[i],'_diff_markers.tsv') ,append=FALSE,sep='\t',row.names=FALSE,col.names=TRUE )}  
@@ -702,9 +726,9 @@ print_geneplots_on_clustree<-function(s.obj,genes, prefix='integrated_snn_res.',
 { if(verbose)
    {cat("Generating clustree geneplots",sep='\n')}
   
- if(!dir.exists(paste0(out_dir,'ƒgeneplots/',assay,'/')))
-  {dir.create(paste0(out_dir,file.path("clustree_geneplots",assay)),recursive=TRUE)}
- out_path<-paste0(out_dir,'clustree_geneplots/',assay,'/')
+ if(!dir.exists(paste0(out_dir,'ƒgeneplots/',assay,'/',fun_use,'/')))
+  {dir.create(paste0(out_dir,file.path("clustree_geneplots",assay,'/',fun_use,'/')),recursive=TRUE)}
+ out_path<-paste0(out_dir,'clustree_geneplots/',assay,'/',fun_use,'/')
  
  DefaultAssay(s.obj)<-assay
  cat('validated genes: \n')
@@ -713,7 +737,7 @@ print_geneplots_on_clustree<-function(s.obj,genes, prefix='integrated_snn_res.',
  for(i in 1:length(validated_genes))
  {
   clustree(s.obj, prefix=prefix,node_colour = validated_genes[i], node_colour_aggr = fun_use)
-  ggsave(paste0(file_prefix,'_',assay,'_',validated_genes[i],".png"),path=out_path, width=8.5, height=11,units="in")
+  ggsave(paste0(file_prefix,'_',assay,'_',validated_genes[i],'_',fun_use,".png"),path=out_path, width=8.5, height=11,units="in")
  }
 }else
   {cat("None of the requested gene(s) found!",'\n')}
@@ -743,6 +767,7 @@ get_silhouette_plot<-function(s.obj,reduction='pca',dims=1:50,out_dir='./',file_
   #Printing the Silhouette plot
   fviz_silhouette(sil)
   ggsave(filename=paste0(file_prefix,"_silhouette.png"),path=out_path, width=33,height=10)
+  return(sil)
 }
 
 ##### Additional visualization functions ######
@@ -784,4 +809,19 @@ d<-d +
 
 ggsave(paste0(out,run_name,assay_d,'_Dotplot.png'), width=w, height=h, units="in",d)
 
+}
+
+### Function to filter out sex chromosome genes from the variable genes of each object in obj.list ###
+## SelectIntegrationFeatures will then select only non-sex chromosome genes ##
+filter_out_XYgenes <- function(Seurat_object, gtf_file='./refdata-gex-GRCh38-2020-A/genes/genes.gtf') {
+  g<-rtracklayer::import(gtf_file)
+  gtf=as.data.frame(g)
+  gtf<-gtf[!duplicated(gtf$gene_id),]
+  XY_genes <- subset(gtf,seqnames %in% c('chrX','chrY'))
+  
+  XYgenes_id <- match(XY_genes$gene_name,Seurat_object@assays[["RNA"]]@var.features) %>% na.omit()
+  message('Filtering out sex chromosome genes from sample ',Seurat_object@project.name)
+  Seurat_object@assays[["RNA"]]@var.features <- Seurat_object@assays[["RNA"]]@var.features[-XYgenes_id]
+  
+  return(Seurat_object)
 }
