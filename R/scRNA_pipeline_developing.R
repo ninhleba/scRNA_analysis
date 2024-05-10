@@ -759,6 +759,10 @@ if(length(obj.list)>1)
    obj.integrated<-obj.list
   }
 
+###(4.1) Merge RNA assay because Seurat v5 doesn't
+obj.integrated <- JoinLayers(obj.integrated, assay = 'RNA')
+obj.integrated[['RNA']] <- as(object = obj.integrated[["RNA"]], Class = "Assay")
+obj.integrated <- NormalizeData(obj.integrated,assay = 'RNA')
 
 ###(5) Add meta data ### (optional)
 
